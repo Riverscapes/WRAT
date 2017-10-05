@@ -30,8 +30,35 @@ def main(projectFolder, network, evh, evc, bankfull, dem, scratch):
         os.mkdir(scratch)                                                                                               # this might be redundant, does it need to be inside project?
 
     # generate raster of individual recruitment probability
-    arcpy.addMessage("Creating probability raster")
+    arcpy.AddMessage("Creating probability raster")
+    individual_raster = prob_raster(evh, evc, bankfull, dem, scratch)
 
+    # create a table from raster to merge with network
+    arcpy.AddMessage("Creating probability table from raster")
+    rasterToTable(network, individual_raster, scratch)
+
+    # merge table with network for final output
+    arcpy.AddMessage("Merging table to netwrok")
+    j = 1
+    while os.path.exists(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j)):
+        j += 1
+    os.mkdir(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j))
+
+    table = scratch + "/out_table.txt"
+    out_table = projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/out_table.dbf"
+
+    individual_raster.save(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/probability_raster.tif")
+    out_network = projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/prob_ind_mort.shp"
+    arcpy.CopyFeatures_management(network, out_network)
+
+    arcpy.CopyRows_management(table, out_table)
+    arcpy.JoinField_management(out_network, "FID", out_table, "ID", ["SUM", "AREA", "REL_PROB", "NORM_PROB"])
+
+    arcpy.Delete_management(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/out_table.dbf")
+
+    arcpy.CheckInExtension("spatial")
+
+    return
 
 
 def prob_raster(evh, evc, bankfull, dem, scratch):
@@ -141,3 +168,63 @@ def prob_raster(evh, evc, bankfull, dem, scratch):
     slope_unitless.save(os.path.dirname(dem) + "/Slope/slope.tif")
 
     return individual_probability
+
+
+def rasterToTable(network, raster, scratch):
+    """Applies the raster output for individual recruitment probability to a network"""
+
+    # make 0s in probability raster no data
+    raster = Con(IsNull(raster), 0, raster)
+
+    # create arrays for fields in output network
+    lengtharray = np.asarray(arcpy.da.FeatureClassToNumPyArray(network, "FID"), np.int16)
+
+    oid = np.arange(0, len(lengtharray), 1)
+    sum_l = []
+    area_l = []
+
+    # apply segmentZS functions to each segment of network to extract field values from raster
+    cursor = arcpy.da.SearchCursor(network, "SHAPE@")
+    for row in cursor:
+        sval = SegmentZS.segmentSum(row[0], raster, "50 Meters", scratch)
+        aval = SegmentZS.segmentArea(row[0], "50 Meters", scratch)
+
+        sum_l.append(sval)
+        area_l.append(aval)
+
+    del row
+    del cursor
+
+    # create and populate probability array
+    sum_a = np.asarray(sum_l, np.float32)
+    area_a = np.asarray(area_l, np.float32)
+    div_a = np.divide(sum_a, area_a)
+    div_amax = div_a.max()
+    div_amin = div_a.min()
+    rel_prob_a = np.zeros(len(div_a))
+    norm_prob_a = np.multiply(div_a, 100)
+
+    for x in range(len(div_a)):
+        rel_prob_a[x] = (div_a[x] - div_amin)/(div_amax - div_amin)
+
+    # generate output table to merge to network
+    columns = np.column_stack((oid, sum_a))
+    columns2 = np.column_stack((columns, area_a))
+    columns3 = np.column_stack((columns2, rel_prob_a))
+    columns4 = np.column_stack((columns3, norm_prob_a))
+    out_table = scratch + "/out_table.txt"
+    np.savetxt(out_table, columns4, delimiter=",", header="ID, SUM, AREA, REL_PROB, NORM_PROB", comments="")
+
+    del sum_a, area_a, div_a, rel_prob_a, norm_prob_a, columns, columns2, columns3, columns4
+
+    return
+
+
+if __name__ == '__main__':
+    main(sys.argv[1],
+         sys.argv[2],
+         sys.argv[3],
+         sys.argv[4],
+         sys.argv[5],
+         sys.argv[6],
+         sys.argv[7])

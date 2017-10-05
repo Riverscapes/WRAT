@@ -12,7 +12,7 @@ def segmentSum(feature, raster, buf_size, temp):
     cell_size = arcpy.Describe(raster).meanCellWidth
     buf = temp + "/buf.shp"
     arcpy.Buffer_analysis(feature, buf, buf_size, "FULL", "FLAT", "")
-    buf_raster = temp + "/buf_raster.shp"
+    buf_raster = temp + "/buf_raster.tif"
     arcpy.PolygonToRaster_conversion(buf, "ORIG_FID", buf_raster, "", "", cell_size)
     table = temp + "/zs_sum.dbf"
     ZonalStatisticsAsTable(buf_raster, "VALUE", raster, table, "DATA", "SUM")

@@ -1,6 +1,6 @@
-# # # ---------------------# # #
+# # #======================# # #
 # # # WRAT Project Builder # # #
-# # # ---------------------# # #
+# # #======================# # #
 
 # Creates and populates the folder structure for a WRAT Project
 # Version 0.1
@@ -15,7 +15,7 @@ import sys
 import string
 
 
-def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps):      # transportation or fragmented valley..?
+def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps, add_scratch):      # transportation or fragmented valley..?
     """Create a WRAT project folder and populate the inptus"""
 
     arcpy.env.overwriteOutput = True
@@ -26,7 +26,7 @@ def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps)
     if os.getcwd() is not projectFolder:
         os.chdir(projectFolder)
 
-    set_structure(projectFolder)
+    set_structure(projectFolder, add_scratch)
 
     # add network inputs to project
     in_network = network.split(";")
@@ -115,11 +115,14 @@ def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps)
         i += 1
 
 
-def set_structure(projectFolder):
+def set_structure(projectFolder, add_scratch):
     """Builds the project folder structure"""
 
     if os.getcwd() is not projectFolder:
         os.chdir(projectFolder)
+
+    if add_scratch == "true":
+        os.mkdir(projectFolder + "/scratch")
 
     if not os.path.exists("01_Inputs"):
         os.mkdir("01_Inputs")
