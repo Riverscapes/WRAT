@@ -54,23 +54,27 @@ class TWI:
         slope_deg = Slope(dem, "DEGREE")
         tan_rad = Tan((slope_deg * 1.570796) / 90)
         slope = Con(tan_rad== 0.0001, tan_rad)
-        # arcpy.CopyRaster_management(slope_deg, )
+
+        if not os.path.exists(os.path.dirname(dem) + "/Slope"):
+            os.mkdir(os.path.dirname(dem) + "/Slope")
+        arcpy.CopyRaster_management(slope_deg, os.path.dirname(dem) + "/Slope/slope_deg.tif", nodata_value=arcpy.Describe(dem).noDataValue)
 
         return slope
 
-    if __name__ == '__main__':
-        def twi(self, da, slope, valley, scratch):
-            """Uses the calculated drainage area and slope to derive a normalized TWI raster """
+    def twi(self, da, slope, valley, scratch):
+        """Uses the calculated drainage area and slope to derive a normalized TWI raster """
 
-            # calculate twi, remove values that are within the valley bottom, then normalize from 1 to 10
-            ti_init = Ln(da / slope)
-            ti_network = ExtractByMask(ti_init, valley)
-            ti150 = Con(ti_network, 150)
-            tireclass = Reclassify(ti150, "VALUE", "150 150; NODATA 0")
-            titemp = ti_init + tireclass
-            tinonnorm = SetNull(titemp, titemp, "VALUE>100")
-            ti_norm = 1 + (tinonnorm - tinonnorm.minimum) * 9 / (tinonnorm.maximum - tinonnorm.minimum)
-            # there was a line here to save the output to the scratch..
+        # calculate twi, remove values that are within the valley bottom, then normalize from 1 to 10
+        ti_init = Ln(da / slope)
+        ti_network = ExtractByMask(ti_init, valley)
+        ti150 = Con(ti_network, 150)
+        tireclass = Reclassify(ti150, "VALUE", "150 150; NODATA 0")
+        titemp = ti_init + tireclass
+        tinonnorm = SetNull(titemp, titemp, "VALUE>100")
+        ti_norm = 1 + (tinonnorm - tinonnorm.minimum) * 9 / (tinonnorm.maximum - tinonnorm.minimum)
+        # there was a line here to save the output to the scratch..
 
-            return ti_norm
+        return ti_norm
+
+
 
