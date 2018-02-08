@@ -17,9 +17,12 @@ import numpy as np
 import SegmentZS
 import os
 import sys
+import datetime
+import uuid
+import projectxml
 
 
-def main(projectFolder, network, evh, evc, bankfull, dem, scratch):
+def main(projectFolder, projName, hucID, hucName, network, evh, evc, bankfull, dem, scratch):
     """Creates a network output for probability of individual LWD recruitment"""
 
     arcpy.env.overwriteOutput = True
@@ -27,7 +30,15 @@ def main(projectFolder, network, evh, evc, bankfull, dem, scratch):
 
     # scratch folder (must be folder not fgdb)
     if not os.path.exists(scratch):
-        os.mkdir(scratch)                                                                                               # this might be redundant, does it need to be inside project?
+        os.mkdir(scratch)
+
+    # check that input data is projected
+    networkSR = arcpy.Describe(network).spatialReference
+    if networkSR.type != "Projected":
+        raise Exception("Input stream network must have a projected coordinate system")
+    bankfullSR = arcpy.Describe(bankfull).spatialReference
+    if bankfullSR.type != "Projected":
+        raise Exception("Input bankfull channel must have a projected coordinate system")
 
     # generate raster of individual recruitment probability
     arcpy.AddMessage("Creating probability raster")
@@ -40,23 +51,73 @@ def main(projectFolder, network, evh, evc, bankfull, dem, scratch):
     # merge table with network for final output
     arcpy.AddMessage("Merging table to netwrok")
     j = 1
-    while os.path.exists(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j)):
+    while os.path.exists(projectFolder + "/02_Analyses/Output_" + str(j)):
         j += 1
-    os.mkdir(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j))
+    os.mkdir(projectFolder + "/02_Analyses/Output_" + str(j))
 
     table = scratch + "/out_table.txt"
-    out_table = projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/out_table.dbf"
+    out_table = projectFolder + "/02_Analyses/Output_" + str(j) + "/out_table.dbf"
 
-    individual_raster.save(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/probability_raster.tif")
-    out_network = projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/prob_ind_mort.shp"
+    individual_raster.save(projectFolder + "/02_Analyses/Output_" + str(j) + "/probability_raster.tif")
+    out_network = projectFolder + "/02_Analyses/Output_" + str(j) + "/recruitment_prob.shp"
     arcpy.CopyFeatures_management(network, out_network)
 
     arcpy.CopyRows_management(table, out_table)
     arcpy.JoinField_management(out_network, "FID", out_table, "ID", ["SUM", "AREA", "REL_PROB", "NORM_PROB"])
 
-    arcpy.Delete_management(projectFolder + "/02_Analyses/Individual_Recruitment/Output_" + str(j) + "/out_table.dbf")
+    arcpy.Delete_management(projectFolder + "/02_Analyses/Output_" + str(j) + "/out_table.dbf")
 
     arcpy.CheckInExtension("spatial")
+
+    # # # Write xml file # # #
+
+    if not os.path.exists(projectFolder + "/project.rs.xml"):
+        xmlfile = projectFolder + "/project.rs.xml"
+
+    # initiate xml file creation
+    newxml = projectxml.ProjectXML(xmlfile, "WRAT", projName)
+
+    if not hucID == None:
+        newxml.addMeta("HUCID", hucID, newxml.project)
+    if not hucID == None:
+        idlist = [int(x) for x in str(hucID)]
+        if idlist[0] == 1 and idlist[1] == 7:
+            newxml.addMeta("Region", "CRB", newxml.project)
+    if not hucName == None:
+        newxml.addMeta("Watershed", hucName, newxml.project)
+
+    newxml.addWRATRealization("WRAT Realization 1", rid="RZ1", dateCreated=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                              productVersion="1.0.0", guid=getUUID())
+
+    # add inputs and outputs to xml file
+    newxml.addProjectInput("Vector", "Stream Network", network[network.find("01_Inputs"):], iid="NETWORK1", guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Network", ref="NETWORK1")
+
+    newxml.addProjectInput("Raster", "Vegetation Height", evh[evh.find("01_Inputs"):], iid="VEGHEIGHT1", guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Vegetation Height", ref="VEGHEIGHT1")
+
+    newxml.addProjectInput("Raster", "Vegetation Cover", evc[evc.find("01_Inputs"):], iid="VEGCOVER1", guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Vegetation Cover", ref="VEGCOVER1")
+
+    newxml.addProjectInput("Vector", "Bankfull Channel", bankfull[bankfull.find("01_Inputs"):], iid="BANKFULL1", guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Bankfull Channel", ref="BANKFULL1")
+
+    newxml.addProjectInput("DEM", "DEM", dem[dem.find("01_Inputs"):], iid="DEM1", guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "DEM", ref="DEM1")
+
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Height Rasters", "Total Height",
+                        path=os.path.dirname(os.path.dirname(evh[evh.find("01_Inputs"):])) + "/Height_Rasters/total_height.tif",
+                        guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Height Rasters", "Effective Height",
+                        path=os.path.dirname(os.path.dirname(evh[evh.find("01_Inputs"):])) + "/Height_Rasters/effective_height.tif",
+                        guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Cover Rasters", "Total Cover",
+                        path=os.path.dirname(os.path.dirname(evc[evc.find("01_Inputs"):])) + "/Cover_Rasters/total_cover.tif",
+                        guid=getUUID())
+    newxml.addWRATInput(newxml.WRATrealizations[0], "Slope", "Slope",
+                        path=os.path.dirname(dem[dem.find("01_Inputs"):]) + "/Slope/slope.tif", guid=getUUID())
+
+    newxml.write()
 
     return
 
@@ -219,6 +280,9 @@ def rasterToTable(network, raster, scratch):
 
     return
 
+def getUUID():
+    return str(uuid.uuid4()).upper()
+
 
 if __name__ == '__main__':
     main(sys.argv[1],
@@ -227,4 +291,7 @@ if __name__ == '__main__':
          sys.argv[4],
          sys.argv[5],
          sys.argv[6],
-         sys.argv[7])
+         sys.argv[7],
+         sys.argv[8],
+         sys.argv[9],
+         sys.argv[10])

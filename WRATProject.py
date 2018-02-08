@@ -15,7 +15,7 @@ import sys
 import string
 
 
-def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps, add_scratch):      # transportation or fragmented valley..?
+def main(projectFolder, network, evh, evc, bankfull, dem, wildfire, bps, add_scratch):      # transportation or fragmented valley..?
     """Create a WRAT project folder and populate the inptus"""
 
     arcpy.env.overwriteOutput = True
@@ -82,19 +82,9 @@ def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps,
         arcpy.CopyRaster_management(in_dem[x], "DEM_" + str(i) + "/" + os.path.basename(in_dem[x]))
         i += 1
 
-    # add valley bottom inputs to project
-    in_valley = valley.split(";")
-    os.chdir(projectFolder + "/01_Inputs/06_Valley_Bottom/")
-    i = 1
-    for x in range(len(in_valley)):
-        if not os.path.exists("Valley_" + str(i)):
-            os.mkdir("Valley_" + str(i))
-        arcpy.CopyFeatures_management(in_valley[x], "Valley_" + str(i) + "/" + os.path.basename(in_valley[x]))
-        i += 1
-
     # add wildfire polygons to project
     in_wildfire = wildfire.split(";")
-    os.chdir(projectFolder + "/01_Inputs/07_Wildfire/")
+    os.chdir(projectFolder + "/01_Inputs/06_Wildfire/")
     i = 1
     for x in range(len(in_wildfire)):
         if not os.path.exists("Wildfire_" + str(i)):
@@ -104,7 +94,7 @@ def main(projectFolder, network, evh, evc, bankfull, dem, valley, wildfire, bps,
 
     # add historic veg inputs to project
     in_bps = bps.split(";")
-    os.chdir(projectFolder + "/01_Inputs/08_Historic_Veg/")
+    os.chdir(projectFolder + "/01_Inputs/07_Historic_Veg/")
     i = 1
     for x in range(len(in_bps)):
         if not os.path.exists("Historic_Veg_" + str(i)):
@@ -139,17 +129,11 @@ def set_structure(projectFolder, add_scratch):
         os.mkdir("04_Bankfull_Channel")
     if not os.path.exists("05_Topo"):
         os.mkdir("05_Topo")
-    if not os.path.exists("06_Valley_Bottom"):
-        os.mkdir("06_Valley_Bottom")
-    if not os.path.exists("07_Wildfire"):
-        os.mkdir("07_Wildfire")
-    if not os.path.exists("08_Historic_Veg"):
-        os.mkdir("08_Historic_Veg")
-    os.chdir(projectFolder + "/02_Analyses")
-    if not os.path.exists("Individual_Recruitment"):
-        os.mkdir("Individual_Recruitment")
-    if not os.path.exists("Episodic_Recruitment"):
-        os.mkdir("Episodic_Recruitment")
+    if not os.path.exists("06_Wildfire"):
+        os.mkdir("06_Wildfire")
+    if not os.path.exists("07_Historic_Veg"):
+        os.mkdir("07_Historic_Veg")
+
 
 if __name__ == '__main__':
     main(

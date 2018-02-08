@@ -11,13 +11,12 @@
 import arcpy
 from arcpy.sa import *
 import os
+from pygeoprocessing.routing import *
 import numpy as np
-import NormalizedTWI
 import RasterOverlap
-import SegmentZS
 import sys
 
-def main(network, evh, evc, dem, valley, firePoly, bps, scratch):
+def main(network, evh, evc, dem, firePoly, bps, scratch):
     """"""
 
     arcpy.env.overwriteOutput = True
@@ -29,33 +28,42 @@ def main(network, evh, evc, dem, valley, firePoly, bps, scratch):
         raise Exception("Network must contain field 'AREA'. Use individual probability output network.")
 
     # make sure datasets are projected
+    fireSR = arcpy.Describe(firePoly).spatialReference
+    if fireSR.type != "Projected":
+        raise Exception("Input wildfire polygon must have a projected coordinate system")
+
+    # create thiessen polygons for analyses
+    midpoints = scratch + "/midpoints.shp"
+    arcpy.FeatureVerticesToPoints_management(network, midpoints, "MID")
+    thiessen = scratch + "/thiessen.shp"
+    arcpy.CreateThiessenPolygons_analysis(midpoints, thiessen)
+    buf_50 = scratch + "/buf_50.shp"
+    arcpy.Buffer_analysis(network, buf_50, "50 Meters", "", "FLAT")
+    thiessen_buf = scratch + "/thiessen_buf.shp"
+    arcpy.Clip_analysis(thiessen, buf_50, thiessen_buf)
 
     # generate raster that is the overlap between bps lwd species and burned areas, convert to 1s and 0s
     arcpy.AddMessage("fire raster")
-    fire_raster = fire_rasters(firePoly, bps, network, scratch)
+    fire_raster = fire_rasters(firePoly, bps, thiessen_buf, scratch)
 
     # summarize the above generated raster onto a table to be merged with network
     arcpy.AddMessage("fire raster to table")
-    rasterToTable(network, fire_raster, scratch)
-
-    # merge table onto network
-    arcpy.AddMessage("merge table")
-    burn_table = scratch + "/burn_table.txt"
-    burn_table_out = scratch + "/burn_table_out.dbf"
-    arcpy.CopyRows_management(burn_table, burn_table_out)
-    arcpy.JoinField_management(network, "FID", burn_table_out, "ID", "BURN_AREA")
+    rasterToTable(network, fire_raster, thiessen_buf)
 
     arcpy.AddField_management(network, "BURN_PROP", "DOUBLE")
     cursor = arcpy.da.UpdateCursor(network, ["BURN_AREA", "AREA", "BURN_PROP"])
     for row in cursor:
         row[2] = row[0] / row[1]
         cursor.updateRow(row)
+        if row[2] > 1:
+            row[2] = 1
+        cursor.updateRow(row)
     del row
     del cursor
 
     # identify slide gullies
     arcpy.AddMessage("gullies")
-    slideGullies(network, dem, valley, scratch)
+    slideGullies(dem, network, scratch)
 
     # get stats within the gullies
     arcpy.AddMessage("gully stats")
@@ -71,14 +79,12 @@ def main(network, evh, evc, dem, valley, firePoly, bps, scratch):
     arcpy.CopyRows_management(gully_table, gully_table_out)
     arcpy.JoinField_management(network, "FID", gully_table_out, "ID", "GULLIES")
 
-    # delete temp folder...?
-
-    arcpy.CheckInExtension("spatial")
+    arcpy.CheckInExtension('spatial')
 
     return
 
 
-def fire_rasters(firePoly, bps, network, scratch):
+def fire_rasters(firePoly, bps, thiessen_buf, scratch):
     """Identify areas where wildfire contributes to LWD recruitment"""
 
     # raster of fire polygon
@@ -128,9 +134,7 @@ def fire_rasters(firePoly, bps, network, scratch):
     del cursor
 
     bps_lookup = Lookup(bps, "LWD")
-    buf_50 = scratch + "/buf_50.shp"
-    arcpy.Buffer_analysis(network, buf_50, "50 Meters", "FULL", "ROUND", "ALL")
-    bps_lwd_temp = ExtractByMask(bps_lookup, buf_50)
+    bps_lwd_temp = ExtractByMask(bps_lookup, thiessen_buf)
     bps_lwd_temp2 = scratch + "/bps_lwd_temp2.tif"
     arcpy.Clip_management(bps_lwd_temp, "", bps_lwd_temp2, burn_raster,
                           arcpy.Describe(bps).noDataValue, "", "MAINTAIN_EXTENT")
@@ -152,42 +156,87 @@ def fire_rasters(firePoly, bps, network, scratch):
     return bps_burn_overlap
 
 
-def slideGullies(network, dem, valley, scratch):
+def rasterToTable(network, raster, thiessen_buf):
+    """Applies the overlap raster of bps lwd and burn areas to network after conducting zonal stats"""
+
+    # make nodata values in raster 0s
+    raster = Con(IsNull(raster), 0, raster)
+
+    # raster resolution
+    rwidth = arcpy.Describe(raster).meanCellWidth
+    rheight = arcpy.Describe(raster).meanCellHeight
+    resolution = rwidth * rheight
+
+    # zonal stats
+    burn_sum_t = ZonalStatisticsAsTable(thiessen_buf, "Input_FID", raster, "burn_sum_t", statistics_type="SUM")
+    arcpy.AddField_management(burn_sum_t, "BURN_AREA", "DOUBLE")
+    cursor = arcpy.da.UpdateCursor(burn_sum_t, ["SUM", "BURN_AREA"])
+    for row in cursor:
+        row[1] = row[0] * resolution
+        cursor.updateRow(row)
+    del row
+    del cursor
+    arcpy.JoinField_management(network, "FID", burn_sum_t, "Input_FID", "BURN_AREA")
+
+    return
+
+
+def slideGullies(dem, network, scratch):
     """"""
 
-    # create a normalized twi raster
-    twi_instance = NormalizedTWI.TWI(dem, valley, scratch)
+    # find input DEM resolution
+    cellHeight = arcpy.Describe(dem).meanCellHeight
+    cellWidth = arcpy.Describe(dem).meanCellWidth
+    resolution = cellHeight * cellWidth
+    ndvalue = arcpy.Describe(dem).noDataValue
 
-    # make sure slope and twi rasters are orthogonal and reclassify them
-    twi_raster = twi_instance.twi_output
-    slope_raster = os.path.dirname(dem) + "/Slope/slope_deg.tif"
+    # derive d-infinity flow accumulation raster from DEM
+    filledDEM = Fill(dem)
+    arcpy.CopyRaster_management(filledDEM, scratch + "/fill.tif", nodata_value=ndvalue)
 
-    arcpy.Clip_management(slope_raster, rectangle=None, out_raster=scratch + "/slope_clip.tif",
-                          in_template_dataset=twi_raster,maintain_clipping_extent="MAINTAIN_EXTENT")
+    fill = scratch + "/fill.tif"
+    fd = scratch + "/fd.tif"
+    fa = scratch + "/fa.tif"
 
-    slope_clip = Raster(scratch + "/slope_clip.tif")
-    slope_final = Reclassify(slope_clip, "VALUE", "0 25 NODATA; 25 90 1")
-    twi_final = Reclassify(twi_raster, "VALUE", RemapRange([[0, 3.4, "NODATA"], [3.4, 10, 1]]))
+    flow_direction_d_inf(fill, fd)
+    flow_accumulation(fd, fill, fa)
 
-    ndval1 = arcpy.Describe(slope_final).noDataValue
-    ndval2 = arcpy.Describe(twi_final).noDataValue
-    arcpy.CopyRaster_management(slope_final, scratch + "/slope_in.tif", nodata_value=ndval1)
-    arcpy.CopyRaster_management(twi_final, scratch + "/twi_in.tif", nodata_value=ndval2)
+    # convert the flow accumulation raster into drainage area raster
+    fa = Raster(scratch + "/fa.tif")
+    dr_area = fa * resolution / 1000000
+    if not os.path.exists(os.path.dirname(dem) + "/Flow"):
+        os.mkdir(os.path.dirname(dem) + "/Flow")
+    dr_area.save(os.path.dirname(dem) + "/Flow/DrainArea_sqkm.tif")
 
-    # find the overlap between the slope and twi input rasters
-    slope_in = scratch + "/slope_in.tif"
-    twi_in = scratch + "/twi_in.tif"
+    # find slope
+    slope_deg = Slope(dem, "DEGREE")
 
-    RasterOverlap.RasterOverlap(slope_in, twi_in, scratch + "/overlap_out.tif")
+    if not os.path.exists(os.path.dirname(dem) + "/Slope"):
+        os.mkdir(os.path.dirname(dem) + "/Slope")
+    arcpy.CopyRaster_management(slope_deg, os.path.dirname(dem) + "/Slope/slope_deg.tif",
+                                nodata_value=arcpy.Describe(dem).noDataValue)
+
+    # reclassify dr area and slope to threshold values
+    dr_area_thresh = Reclassify(dr_area, "VALUE", "0 0.045 NODATA; 0.045 100000 1")
+    slope_thresh = Reclassify(slope_deg, "VALUE", "0 20 NODATA; 20 90 1")
+    arcpy.CopyRaster_management(dr_area_thresh, scratch + "/dr_area_thresh.tif", nodata_value=-128)
+    arcpy.CopyRaster_management(slope_thresh, scratch + "/slope_thresh.tif", nodata_value=-128)
+
+    # clip to extent of whichever is smaller (always same from same DEM?) might also need to get rid of VBs here
+
+    # find overlap
+    in1 = scratch + "/dr_area_thresh.tif"
+    in2 = scratch + "/slope_thresh.tif"
+    RasterOverlap.RasterOverlap(in1, in2, scratch + "/overlap.tif")
 
     # convert landslide raster output to prepared landslide polygons
-    landslide_raster = Raster(scratch + "/overlap_out.tif")
+    landslide_raster = Raster(scratch + "/overlap.tif")
     ls_raster = SetNull(landslide_raster, landslide_raster, "VALUE <> 1")
 
     ls_poly = scratch + "/ls_poly.shp"
     arcpy.RasterToPolygon_conversion(ls_raster, ls_poly, "SIMPLIFY")
     ag_poly = scratch + "/ag_poly.shp"
-    arcpy.AggregatePolygons_cartography(ls_poly, ag_poly, 70, 2500)
+    arcpy.AggregatePolygons_cartography(ls_poly, ag_poly, 70, 5000)
     arcpy.Near_analysis(ag_poly, network)
 
     # generate output file
@@ -201,59 +250,7 @@ def slideGullies(network, dem, valley, scratch):
     arcpy.DeleteField_management(output, "NEAR_FID")
     arcpy.Near_analysis(output, network)
 
-    if not os.path.exists(os.path.dirname(dem) + "/TWI"):
-        os.mkdir(os.path.dirname(dem) + "/TWI")
-    twi_raster.save(os.path.dirname(dem) + "/TWI/twi.tif")
-
-    arcpy.Delete_management(slope_clip)
-    arcpy.Delete_management(slope_in)
-    arcpy.Delete_management(twi_in)
-    arcpy.Delete_management(ls_poly)
-    arcpy.Delete_management(ag_poly)
-    arcpy.Delete_management(scratch + "/overlap_out.tif")
-    arcpy.Delete_management(scratch + "/slope.tif")
-    arcpy.Delete_management(scratch + "/twi_norm.tif")
-
     return output
-
-
-def rasterToTable(network, raster, scratch):
-    """Applies the overlap raster of bps lwd and burn areas to network after conducting zonal stats"""
-
-    # make nodata values in raster 0s
-    raster = Con(IsNull(raster), 0, raster)
-
-    # raster resolution
-    rwidth = arcpy.Describe(raster).meanCellWidth
-    rheight = arcpy.Describe(raster).meanCellHeight
-    resolution = rwidth * rheight
-
-    # create arrays for fields in output network
-    lengtharray = np.asarray(arcpy.da.FeatureClassToNumPyArray(network, "FID"), np.int16)
-
-    oid = np.arange(0, len(lengtharray), 1)
-    sum_l = []
-
-    # apply functions to each segment of network to get desired output field values
-    cursor = arcpy.da.SearchCursor(network, "SHAPE@")
-    for row in cursor:
-        sval = SegmentZS.segmentSum(row[0], raster, "50 Meters", scratch)
-
-        sum_l.append(sval)
-
-    del row
-    del cursor
-
-    # create array for proportion burned
-    sum_a = np.asarray(sum_l, np.float32)
-    burn_area = np.multiply(sum_a, resolution)
-
-    columns = np.column_stack((oid, burn_area))
-    out_table = scratch + "/burn_table.txt"
-    np.savetxt(out_table, columns, delimiter=",", header="ID, BURN_AREA", comments="")
-
-    return
-
 
 def gulliesSum(gullies, height, cover, scratch):
     """Stats for the variables within the slide gullies"""
@@ -316,5 +313,4 @@ if __name__ == '__main__':
         sys.argv[4],
         sys.argv[5],
         sys.argv[6],
-        sys.argv[7],
-        sys.argv[8])
+        sys.argv[7])
